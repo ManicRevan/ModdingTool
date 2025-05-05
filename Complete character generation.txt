@@ -1,0 +1,363 @@
+class CharacterGenerator {
+  constructor(config) {
+    this.config = config;
+    this.modelGenerator = new ModelGenerator(config);
+    this.textureGenerator = new TextureGenerator(config);
+    this.animationGenerator = new AnimationGenerator(config);
+    this.voiceSynthesizer = new VoiceSynthesizer(config);
+    this.blenderIntegration = new BlenderIntegration(config);
+  }
+  
+  async initialize() {
+    await this.modelGenerator.initialize();
+    await this.textureGenerator.initialize();
+    await this.animationGenerator.initialize();
+    await this.voiceSynthesizer.initialize();
+    return true;
+  }
+  
+  async generateCharacter(characterParams) {
+    logger.info(`Generating character: ${characterParams.name}`);
+    
+    try {
+      // Generate character structure
+      const characterStructure = await this.createCharacterStructure(characterParams);
+      
+      // Generate 3D models
+      const models = await this.generateCharacterModels(characterStructure);
+      
+      // Generate textures
+      const textures = await this.generateCharacterTextures(characterStructure);
+      
+      // Generate animations
+      const animations = await this.generateCharacterAnimations(characterStructure);
+      
+      // Generate voice profile
+      const voiceProfile = await this.generateVoiceProfile(characterStructure);
+      
+      // Bundle everything together
+      return {
+        characterStructure,
+        models,
+        textures,
+        animations,
+        voiceProfile
+      };
+    } catch (error) {
+      logger.error(`Error generating character ${characterParams.name}:`, error);
+      throw error;
+    }
+  }
+  
+  async createCharacterStructure(params) {
+    // Create the base character structure
+    const characterId = params.name.toLowerCase().replace(/\s+/g, '_');
+    
+    // Basic character structure
+    const structure = {
+      id: characterId,
+      name: params.name,
+      description: params.description || `Character: ${params.name}`,
+      characterType: params.characterType || 'NPC',
+      
+      // Appearance
+      appearance: params.appearance || {
+        gender: 'Male',
+        bodyType: 'Average',
+        age: 30,
+        hairStyle: 'Short',
+        hairColor: '#3B2716',
+        skinTone: '#D2B48C',
+        eyeColor: '#3B2F2F',
+        facialFeatures: {
+          jawShape: 'Square',
+          noseShape: 'Straight',
+          eyeShape: 'Almond',
+          mouthShape: 'Medium'
+        },
+        clothing: {
+          style: 'Casual',
+          outfit: 'Default',
+          colors: {
+            primary: '#2D2D2D',
+            secondary: '#778899',
+            accent: '#8B0000'
+          }
+        }
+      },
+      
+      // Personality
+      personality: params.personality || {
+        attitude: 'Neutral',
+        temperament: 'Balanced',
+        motivation: 'Survival',
+        background: 'Street Kid',
+        traits: ['Resourceful', 'Cautious']
+      },
+      
+      // Voice
+      voice: params.voice || {
+        type: 'Male_Average',
+        pitch: 1.0,
+        roughness: 0.2,
+        accent: 'American'
+      },
+      
+      // Animations
+      animations: params.animations || [
+        'idle_neutral',
+        'walk_normal',
+        'run_normal',
+        'talk_casual',
+        'gesture_point'
+      ],
+      
+      // Dialogue samples
+      dialogueSamples: params.dialogueSamples || [
+        'Hey there, what can I do for you?',
+        'This city will eat you alive if you're not careful.',
+        'Got any interesting jobs lately?',
+        'I've seen things you wouldn't believe in this city.',
+        'Watch yourself out there, it's dangerous.'
+      ]
+    };
+    
+    return structure;
+  }
+  
+  async generateCharacterModels(characterStructure) {
+    // Generate 3D models for the character
+    const outputDir = path.join(this.config.paths.tempPath, 'models', characterStructure.id);
+    await fs.ensureDir(outputDir);
+    
+    // Create parameters for Blender integration
+    const blenderParams = {
+      gender: characterStructure.appearance.gender,
+      bodyType: characterStructure.appearance.bodyType,
+      height: characterStructure.appearance.height || 1.8,
+      separateHeadBody: true,
+      outputPath: outputDir
+    };
+    
+    // Generate models using Blender
+    const blenderOutput = await this.blenderIntegration.generateCharacter(blenderParams);
+    
+    // Convert to game formats
+    const bodyMeshPath = path.join(this.config.paths.tempPath, 'models', `${characterStructure.id}_body.mesh`);
+    const headMeshPath = path.join(this.config.paths.tempPath, 'models', `${characterStructure.id}_head.mesh`);
+    
+    // Use FormatConverter to convert GLB to Mesh format
+    const formatConverter = new FormatConverter();
+    await formatConverter.glbToMesh(blenderOutput.glb, bodyMeshPath);
+    
+    // Create appearance file
+    const appearancePath = path.join(this.config.paths.tempPath, 'appearances', `${characterStructure.id}.app`);
+    await fs.ensureDir(path.dirname(appearancePath));
+    
+    const appearanceData = {
+      name: characterStructure.name,
+      components: [
+        {
+          name: `${characterStructure.id}_body`,
+          mesh: `${characterStructure.id}_body.mesh`,
+          materials: [
+            {
+              name: `${characterStructure.id}_body_material`,
+              baseColor: `${characterStructure.id}_body_d.xbm`,
+              normal: `${characterStructure.id}_body_n.xbm`
+            }
+          ]
+        },
+        {
+          name: `${characterStructure.id}_head`,
+          mesh: `${characterStructure.id}_head.mesh`,
+          materials: [
+            {
+              name: `${characterStructure.id}_head_material`,
+              baseColor: `${characterStructure.id}_head_d.xbm`,
+              normal: `${characterStructure.id}_head_n.xbm`
+            }
+          ]
+        }
+      ]
+    };
+    
+    await fs.writeJson(appearancePath, appearanceData, { spaces: 2 });
+    
+    return {
+      body: bodyMeshPath,
+      head: headMeshPath,
+      appearance: appearancePath
+    };
+  }
+  
+  async generateCharacterTextures(characterStructure) {
+    // Generate textures for the character
+    const results = {};
+    
+    // Body diffuse texture
+    const bodyDiffuseParams = {
+      textureType: 'skin',
+      resolution: 2048,
+      prompt: `Realistic human body skin texture, ${characterStructure.appearance.gender.toLowerCase()}, ${characterStructure.appearance.skinTone} tone, seamless, high detail, PBR`,
+      negativePrompt: 'face, hands, explicit, nude, anatomy'
+    };
+    
+    results.bodyDiffuse = await this.textureGenerator.generateTexture(bodyDiffuseParams);
+    
+    // Body normal map
+    const bodyNormalParams = {
+      textureType: 'normal',
+      resolution: 2048,
+      prompt: `Skin normal map, pores, wrinkles, seamless, high detail`
+    };
+    
+    results.bodyNormal = await this.textureGenerator.generateTexture(bodyNormalParams);
+    
+    // Head diffuse texture
+    const headDiffuseParams = {
+      textureType: 'skin',
+      resolution: 2048,
+      prompt: `Realistic human face, ${characterStructure.appearance.gender.toLowerCase()}, ${characterStructure.appearance.age} years old, ${characterStructure.appearance.skinTone} skin, ${characterStructure.appearance.hairColor} hair, ${characterStructure.appearance.eyeColor} eyes, ${characterStructure.appearance.facialFeatures.jawShape} jaw, high detail, PBR`
+    };
+    
+    results.headDiffuse = await this.textureGenerator.generateTexture(headDiffuseParams);
+    
+    // Head normal map
+    const headNormalParams = {
+      textureType: 'normal',
+      resolution: 2048,
+      prompt: `Face normal map, pores, wrinkles, skin detail, seamless, high detail`
+    };
+    
+    results.headNormal = await this.textureGenerator.generateTexture(headNormalParams);
+    
+    // Convert textures to game format
+    const formatConverter = new FormatConverter();
+    
+    const bodyDiffusePath = path.join(this.config.paths.tempPath, 'textures', `${characterStructure.id}_body_d.xbm`);
+    const bodyNormalPath = path.join(this.config.paths.tempPath, 'textures', `${characterStructure.id}_body_n.xbm`);
+    const headDiffusePath = path.join(this.config.paths.tempPath, 'textures', `${characterStructure.id}_head_d.xbm`);
+    const headNormalPath = path.join(this.config.paths.tempPath, 'textures', `${characterStructure.id}_head_n.xbm`);
+    
+    await fs.ensureDir(path.dirname(bodyDiffusePath));
+    
+    await formatConverter.pngToXbm(results.bodyDiffuse, bodyDiffusePath);
+    await formatConverter.pngToXbm(results.bodyNormal, bodyNormalPath);
+    await formatConverter.pngToXbm(results.headDiffuse, headDiffusePath);
+    await formatConverter.pngToXbm(results.headNormal, headNormalPath);
+    
+    return {
+      bodyDiffuse: bodyDiffusePath,
+      bodyNormal: bodyNormalPath,
+      headDiffuse: headDiffusePath,
+      headNormal: headNormalPath
+    };
+  }
+  
+  async generateCharacterAnimations(characterStructure) {
+    // Generate animations for the character
+    const results = {};
+    
+    // Animation parameters
+    const animParams = {
+      animations: []
+    };
+    
+    // Add each animation from the structure
+    for (const animName of characterStructure.animations) {
+      animParams.animations.push({
+        name: `${characterStructure.id}_${animName}`,
+        type: animName.split('_')[0], // e.g., 'idle' from 'idle_neutral'
+        target: 'character',
+        duration: this.getAnimationDuration(animName)
+      });
+    }
+    
+    // Generate animations
+    const generatedAnims = await this.animationGenerator.generateAnimations(animParams);
+    
+    for (const [animName, animPath] of Object.entries(generatedAnims)) {
+      results[animName] = animPath;
+    }
+    
+    // Create animation set file
+    const animSetPath = path.join(this.config.paths.tempPath, 'animations', `${characterStructure.id}_anims.anm`);
+    
+    const animSetData = {
+      characterId: characterStructure.id,
+      animations: Object.keys(results).map(name => ({
+        id: name,
+        path: results[name]
+      }))
+    };
+    
+    await fs.writeJson(animSetPath, animSetData, { spaces: 2 });
+    results.animSet = animSetPath;
+    
+    return results;
+  }
+  
+  getAnimationDuration(animName) {
+    // Return appropriate duration based on animation type
+    const animType = animName.split('_')[0];
+    
+    switch (animType) {
+      case 'idle':
+        return 5.0;
+      case 'walk':
+        return 2.0;
+      case 'run':
+        return 1.5;
+      case 'talk':
+        return 3.0;
+      case 'gesture':
+        return 1.5;
+      default:
+        return 2.0;
+    }
+  }
+  
+  async generateVoiceProfile(characterStructure) {
+    // Generate voice profile
+    const voiceId = `${characterStructure.id}_voice`;
+    const outputDir = path.join(this.config.paths.tempPath, 'audio', characterStructure.id);
+    await fs.ensureDir(outputDir);
+    
+    // Create voice profile
+    const profile = {
+      gender: characterStructure.appearance.gender,
+      pitch: characterStructure.voice.pitch,
+      speed: 1.0,
+      depth: characterStructure.voice.pitch < 1.0 ? 1.1 : 0.9,
+      roughness: characterStructure.voice.roughness,
+      clarity: 0.8,
+      formant_shift: characterStructure.voice.pitch < 1.0 ? -0.05 : 0.05
+    };
+    
+    // Generate voice samples
+    const voiceBank = await this.voiceSynthesizer.createVoiceBank(
+      characterStructure.id, 
+      characterStructure.dialogueSamples.reduce((acc, text, index) => {
+        acc[`sample_${index + 1}`] = text;
+        return acc;
+      }, {}), 
+      outputDir
+    );
+    
+    // Save voice profile
+    const profilePath = path.join(outputDir, `${voiceId}_profile.json`);
+    await fs.writeJson(profilePath, {
+      id: voiceId,
+      character: characterStructure.id,
+      profile: profile,
+      samples: voiceBank.voices
+    }, { spaces: 2 });
+    
+    return {
+      id: voiceId,
+      profile: profilePath,
+      voiceBank: voiceBank
+    };
+  }
+}

@@ -1,0 +1,136 @@
+class QuestGenerator {
+  constructor(config) {
+    this.config = config;
+    this.scriptGenerator = new ScriptGenerator(config);
+    this.voiceGenerator = new VoiceSynthesizer(config);
+    this.sceneGenerator = new SceneGenerator(config);
+  }
+  
+  async initialize() {
+    await this.scriptGenerator.initialize();
+    await this.voiceGenerator.initialize();
+    await this.sceneGenerator.initialize();
+    return true;
+  }
+  
+  async generateQuest(questParams) {
+    logger.info(`Generating quest: ${questParams.name}`);
+    
+    try {
+      // Generate quest structure
+      const questStructure = await this.createQuestStructure(questParams);
+      
+      // Generate quest script
+      const questScript = await this.generateQuestScript(questStructure);
+      
+      // Generate dialogues
+      const dialogues = await this.generateDialogues(questStructure);
+      
+      // Generate scenes
+      const scenes = await this.generateScenes(questStructure);
+      
+      // Generate voice content
+      const voiceContent = await this.generateVoiceContent(dialogues);
+      
+      // Bundle everything together
+      return {
+        questStructure,
+        questScript,
+        dialogues,
+        scenes,
+        voiceContent
+      };
+    } catch (error) {
+      logger.error(`Error generating quest ${questParams.name}:`, error);
+      throw error;
+    }
+  }
+  
+  async createQuestStructure(params) {
+    // Create the base quest structure
+    const questId = params.name.toLowerCase().replace(/\s+/g, '_');
+    
+    // Basic quest structure
+    const structure = {
+      id: questId,
+      name: params.name,
+      description: params.description || `Quest: ${params.name}`,
+      questType: params.questType || 'SideQuest',
+      difficulty: params.difficulty || 'Medium',
+      recommendedLevel: params.recommendedLevel || 15,
+      isMainQuest: params.isMainQuest === true,
+      
+      // Quest phases
+      phases: params.phases || this.generateDefaultPhases(questId),
+      
+      // Quest objectives
+      objectives: params.objectives || this.generateDefaultObjectives(questId),
+      
+      // Quest rewards
+      rewards: params.rewards || {
+        experience: 1000,
+        streetCred: 200,
+        money: 1500,
+        items: []
+      },
+      
+      // NPCs involved in the quest
+      npcs: params.npcs || this.generateDefaultNPCs(questId),
+      
+      // Locations used in the quest
+      locations: params.locations || this.generateDefaultLocations(questId),
+      
+      // Branching dialogue trees
+      dialogueTrees: params.dialogueTrees || this.generateDefaultDialogueTrees(questId)
+    };
+    
+    return structure;
+  }
+  
+  generateDefaultPhases(questId) {
+    // Generate default quest phases
+    return [
+      {
+        id: `${questId}_phase_1`,
+        name: 'Introduction',
+        description: 'Meet the quest giver and learn about the job.',
+        objectiveIds: [`${questId}_objective_1`],
+        completionCondition: {
+          type: 'ObjectiveComplete',
+          objectiveId: `${questId}_objective_1`
+        }
+      },
+      {
+        id: `${questId}_phase_2`,
+        name: 'Main Task',
+        description: 'Complete the main task for the quest.',
+        objectiveIds: [`${questId}_objective_2`, `${questId}_objective_3`],
+        completionCondition: {
+          type: 'AllObjectivesComplete',
+          objectiveIds: [`${questId}_objective_2`, `${questId}_objective_3`]
+        }
+      },
+      {
+        id: `${questId}_phase_3`,
+        name: 'Conclusion',
+        description: 'Return to the quest giver for your reward.',
+        objectiveIds: [`${questId}_objective_4`],
+        completionCondition: {
+          type: 'ObjectiveComplete',
+          objectiveId: `${questId}_objective_4`
+        }
+      }
+    ];
+  }
+  
+  generateDefaultObjectives(questId) {
+    // Generate default quest objectives
+    return [
+      {
+        id: `${questId}_objective_1`,
+        name: 'Meet with the contact',
+        description: 'Go to the meeting point and talk to your contact.',
+        isOptional: false,
+        locationId: `${questId}_location_1`,
+        waypoint: {
+          type:

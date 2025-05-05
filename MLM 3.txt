@@ -1,0 +1,175 @@
+class BlenderIntegration {
+  constructor(config) {
+    this.config = config;
+    this.blenderPath = config.blender.path || 'blender';
+    this.pythonScriptsPath = path.join(__dirname, 'python_scripts');
+    
+    // Ensure Python script directory exists
+    fs.ensureDirSync(this.pythonScriptsPath);
+    
+    // Create necessary Python scripts
+    this.createPythonScripts();
+  }
+  
+  createPythonScripts() {
+    // Create Python script for character generation
+    const characterGeneratorScript = `
+import bpy
+import sys
+import json
+import os
+import math
+import random
+
+# Get parameters from command line
+params_file = sys.argv[-1]
+with open(params_file, 'r') as f:
+    params = json.load(f)
+
+# Clear existing objects
+bpy.ops.object.select_all(action='DESELECT')
+bpy.ops.object.select_by_type(type='MESH')
+bpy.ops.object.delete()
+
+# Generate character
+def generate_character():
+    # Create base mesh
+    if params.get('gender') == 'female':
+        bpy.ops.mesh.primitive_uv_sphere_add(segments=32, ring_count=16, radius=0.8)
+        torso = bpy.context.active_object
+        torso.name = 'Torso'
+        
+        # Modify to create female form
+        bpy.ops.object.mode_set(mode='EDIT')
+        # Modeling operations would go here
+        bpy.ops.object.mode_set(mode='OBJECT')
+    else:
+        bpy.ops.mesh.primitive_uv_sphere_add(segments=32, ring_count=16, radius=1.0)
+        torso = bpy.context.active_object
+        torso.name = 'Torso'
+        
+        # Modify to create male form
+        bpy.ops.object.mode_set(mode='EDIT')
+        # Modeling operations would go here
+        bpy.ops.object.mode_set(mode='OBJECT')
+    
+    # Create head
+    bpy.ops.mesh.primitive_uv_sphere_add(segments=32, ring_count=16, radius=0.4)
+    head = bpy.context.active_object
+    head.name = 'Head'
+    head.location = (0, 0, 1.6)
+    
+    # Join meshes if needed
+    if params.get('joined', True):
+        bpy.ops.object.select_all(action='DESELECT')
+        head.select_set(True)
+        torso.select_set(True)
+        bpy.context.view_layer.objects.active = torso
+        bpy.ops.object.join()
+    
+    # Create armature
+    bpy.ops.object.armature_add()
+    armature = bpy.context.active_object
+    armature.name = 'CharacterArmature'
+    
+    # Add basic rig
+    bpy.ops.object.mode_set(mode='EDIT')
+    # Add bones here
+    bpy.ops.object.mode_set(mode='OBJECT')
+    
+    # Parent mesh to armature
+    bpy.ops.object.select_all(action='DESELECT')
+    torso.select_set(True)
+    armature.select_set(True)
+    bpy.context.view_layer.objects.active = armature
+    bpy.ops.object.parent_set(type='ARMATURE')
+    
+    # Add basic materials
+    mat = bpy.data.materials.new(name="CharacterMaterial")
+    mat.use_nodes = True
+    
+    # Save as separate files
+    export_path = params.get('export_path', '/tmp')
+    
+    # Export GLB
+    bpy.ops.export_scene.gltf(
+        filepath=os.path.join(export_path, 'character.glb'),
+        export_format='GLB',
+        export_animations=True,
+        export_skins=True,
+        export_materials=params.get('export_materials', True)
+    )
+    
+    # Export the FBX file
+    bpy.ops.export_scene.fbx(
+        filepath=os.path.join(export_path, 'character.fbx'),
+        use_selection=False,
+        global_scale=1.0,
+        apply_unit_scale=True,
+        bake_space_transform=True,
+        use_mesh_modifiers=True,
+        use_armature_deform_only=False,
+        add_leaf_bones=False,
+        primary_bone_axis='Y',
+        secondary_bone_axis='X',
+        use_metadata=True,
+        path_mode='COPY',
+        embed_textures=False,
+        mesh_smooth_type='EDGE'
+    )
+
+# Run the main function
+generate_character()
+    `;
+    
+    fs.writeFileSync(
+      path.join(this.pythonScriptsPath, 'character_generator.py'),
+      characterGeneratorScript
+    );
+    
+    // Create Python script for item generation
+    const itemGeneratorScript = `
+import bpy
+import sys
+import json
+import os
+import math
+import random
+
+# Get parameters from command line
+params_file = sys.argv[-1]
+with open(params_file, 'r') as f:
+    params = json.load(f)
+
+# Clear existing objects
+bpy.ops.object.select_all(action='DESELECT')
+bpy.ops.object.select_by_type(type='MESH')
+bpy.ops.object.delete()
+
+# Generate item
+def generate_item():
+    item_type = params.get('type', 'weapon')
+    
+    if item_type == 'weapon':
+        # Create gun/weapon base
+        bpy.ops.mesh.primitive_cube_add(size=1)
+        weapon_body = bpy.context.active_object
+        weapon_body.name = 'WeaponBody'
+        weapon_body.scale = (0.1, 0.5, 0.1)
+        
+        # Create barrel
+        bpy.ops.mesh.primitive_cylinder_add(radius=0.05, depth=0.8)
+        barrel = bpy.context.active_object
+        barrel.name = 'Barrel'
+        barrel.location = (0, 0.5, 0)
+        barrel.rotation_euler = (0, math.radians(90), 0)
+        
+        # Create trigger
+        bpy.ops.mesh.primitive_cube_add(size=1)
+        trigger = bpy.context.active_object
+        trigger.name = 'Trigger'
+        trigger.scale = (0.03, 0.05, 0.1)
+        trigger.location = (0, 0, -0.15)
+        
+        # Join meshes
+        bpy.ops

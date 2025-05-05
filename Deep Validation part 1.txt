@@ -1,0 +1,845 @@
+class GameFormatAnalyzer {
+  constructor(config) {
+    this.config = config;
+    this.fileSignatures = {};
+    this.formatRules = {};
+    this.gameVersion = config.modDefaults.gameVersion;
+    this.dbPath = path.join(config.paths.tempPath, 'format_analysis.json');
+  }
+  
+  async initialize() {
+    // Check if we already have an analysis database
+    if (fs.existsSync(this.dbPath)) {
+      const analysisData = await fs.readJson(this.dbPath);
+      this.fileSignatures = analysisData.signatures || {};
+      this.formatRules = analysisData.rules || {};
+      
+      // Check if the analysis is for the current game version
+      if (analysisData.gameVersion === this.gameVersion) {
+        logger.info(`Loaded format analysis for game version ${this.gameVersion}`);
+        return true;
+      } else {
+        logger.info(`Format analysis found for different game version (${analysisData.gameVersion})`);
+      }
+    }
+    
+    // Need to perform analysis
+    return false;
+  }
+  
+  async analyzeGameFiles(gamePath) {
+    logger.info('Beginning deep game file format analysis...');
+    
+    // This could take a long time for a full game install
+    // We might want to use a progress bar or spinner
+    const spinner = ora('Analyzing game file formats...').start();
+    
+    try {
+      // Collect file information by type
+      const filesByExt = await this.collectGameFiles(gamePath);
+      
+      // Analyze each file type
+      const signatures = {};
+      const rules = {};
+      
+      for (const [ext, files] of Object.entries(filesByExt)) {
+        spinner.text = `Analyzing ${ext} files (${files.length} found)...`;
+        
+        if (files.length > 0) {
+          // Take a sample of files to analyze (not all of them)
+          const sampleSize = Math.min(files.length, 50);
+          const sampleFiles = this.getRandomSample(files, sampleSize);
+          
+          // Analyze file format
+          const { signature, formatRules } = await this.analyzeFileFormat(ext, sampleFiles);
+          
+          signatures[ext] = signature;
+          rules[ext] = formatRules;
+        }
+      }
+      
+      // Save analysis results
+      await this.saveAnalysisResults(signatures, rules);
+      
+      spinner.succeed(`Game file format analysis completed successfully`);
+      
+      // Update properties
+      this.fileSignatures = signatures;
+      this.formatRules = rules;
+      
+      return { signatures, rules };
+    } catch (error) {
+      spinner.fail(`Game file format analysis failed`);
+      logger.error('Error analyzing game files:', error);
+      throw error;
+    }
+  }
+  
+  async collectGameFiles(gamePath) {
+    // Collect files by extension
+    const filesByExt = {};
+    
+    // Define the directories to scan
+    const directories = [
+      path.join(gamePath, 'archive', 'pc', 'content'),
+      path.join(gamePath, 'bin', 'x64'),
+      path.join(gamePath, 'engine')
+    ];
+    
+    // Scan each directory
+    for (const dir of directories) {
+      if (fs.existsSync(dir)) {
+        const files = await this.scanDirectory(dir);
+        
+        // Group by extension
+        for (const file of files) {
+          const ext = path.extname(file).toLowerCase();
+          if (!filesByExt[ext]) {
+            filesByExt[ext] = [];
+          }
+          filesByExt[ext].push(file);
+        }
+      }
+    }
+    
+    return filesByExt;
+  }
+  
+  async scanDirectory(dir) {
+    // Recursively scan a directory for files
+    const files = [];
+    
+    const scan = async (directory) => {
+      const entries = await fs.readdir(directory, { withFileTypes: true });
+      
+      for (const entry of entries) {
+        const entryPath = path.join(directory, entry.name);
+        
+        if (entry.isDirectory()) {
+          await scan(entryPath);
+        } else if (entry.isFile()) {
+          files.push(entryPath);
+        }
+      }
+    };
+    
+    await scan(dir);
+    return files;
+  }
+  
+  getRandomSample(array, size) {
+    // Get a random sample of elements from an array
+    const shuffled = array.slice();
+    let currentIndex = shuffled.length;
+    let temporaryValue, randomIndex;
+    
+    // Fisher-Yates shuffle
+    while (currentIndex !== 0) {
+      randomIndex = Math.floor(Math.random() * currentIndex);
+      currentIndex -= 1;
+      
+      temporaryValue = shuffled[currentIndex];
+      shuffled[currentIndex] = shuffled[randomIndex];
+      shuffled[randomIndex] = temporaryValue;
+    }
+    
+    return shuffled.slice(0, size);
+  }
+  
+  async analyzeFileFormat(extension, sampleFiles) {
+    // Analyze file format based on sample files
+    const signature = {
+      extension,
+      magicBytes: [],
+      headerStructure: {},
+      commonSections: [],
+      avgFileSize: 0
+    };
+    
+    const formatRules = {
+      extension,
+      requiredHeaders: [],
+      validMagicBytes: [],
+      fieldRanges: {},
+      versionCompatibility: {}
+    };
+    
+    // Track total file size for average calculation
+    let totalSize = 0;
+    
+    // Analyze each sample file
+    for (const filePath of sampleFiles) {
+      try {
+        // Get file size
+        const stats = await fs.stat(filePath);
+        totalSize += stats.size;
+        
+        // Read first 256 bytes for header analysis
+        const fd = await fs.open(filePath, 'r');
+        const headerBuffer = Buffer.alloc(256);
+        await fd.read(headerBuffer, 0, 256, 0);
+        await fd.close();
+        
+        // Extract magic bytes (first 4-8 bytes usually)
+        const magicBytes = headerBuffer.slice(0, 8).toString('hex');
+        signature.magicBytes.push(magicBytes);
+        
+        // Analyze header structure
+        const headerStructure = this.analyzeHeaderStructure(headerBuffer, extension);
+        
+        // Merge header structure into signature
+        this.mergeHeaderStructure(signature.headerStructure, headerStructure);
+        
+        // Detect file sections
+        const sections = await this.detectFileSections(filePath, headerBuffer);
+        
+        // Add sections to common sections list
+        for (const section of sections) {
+          if (!signature.commonSections.some(s => s.name === section.name)) {
+            signature.commonSections.push(section);
+          }
+        }
+      } catch (error) {
+        logger.error(`Error analyzing file ${filePath}:`, error);
+      }
+    }
+    
+    // Calculate average file size
+    signature.avgFileSize = Math.round(totalSize / sampleFiles.length);
+    
+    // Determine most common magic bytes
+    const magicByteCounts = {};
+    for (const magic of signature.magicBytes) {
+      magicByteCounts[magic] = (magicByteCounts[magic] || 0) + 1;
+    }
+    
+    // Sort by frequency
+    const sortedMagicBytes = Object.entries(magicByteCounts)
+      .sort((a, b) => b[1] - a[1])
+      .map(entry => entry[0]);
+    
+    // Keep only the most frequent ones
+    signature.magicBytes = sortedMagicBytes.slice(0, 3);
+    formatRules.validMagicBytes = signature.magicBytes;
+    
+    // Set format rules based on signature
+    if (Object.keys(signature.headerStructure).length > 0) {
+      formatRules.requiredHeaders = Object.keys(signature.headerStructure);
+      
+      // Determine field ranges for numeric fields
+      for (const [field, values] of Object.entries(signature.headerStructure)) {
+        if (typeof values.min === 'number' && typeof values.max === 'number') {
+          formatRules.fieldRanges[field] = {
+            min: values.min,
+            max: values.max
+          };
+        }
+      }
+    }
+    
+    // Set version compatibility based on game version
+    formatRules.versionCompatibility[this.gameVersion] = true;
+    
+    return { signature, formatRules };
+  }
+  
+  analyzeHeaderStructure(headerBuffer, extension) {
+    // Detect structure based on file extension
+    const headerStructure = {};
+    
+    // Common header fields for different file types
+    const view = new DataView(headerBuffer.buffer);
+    
+    switch (extension) {
+      case '.mesh':
+        headerStructure.magic = {
+          offset: 0,
+          type: 'string',
+          value: headerBuffer.slice(0, 4).toString('ascii')
+        };
+        headerStructure.version = {
+          offset: 4,
+          type: 'uint32',
+          value: view.getUint32(4, true),
+          min: view.getUint32(4, true),
+          max: view.getUint32(4, true)
+        };
+        headerStructure.fileSize = {
+          offset: 8,
+          type: 'uint32',
+          value: view.getUint32(8, true),
+          min: view.getUint32(8, true),
+          max: view.getUint32(8, true)
+        };
+        headerStructure.vertexCount = {
+          offset: 16,
+          type: 'uint32',
+          value: view.getUint32(16, true),
+          min: view.getUint32(16, true),
+          max: view.getUint32(16, true)
+        };
+        headerStructure.indexCount = {
+          offset: 20,
+          type: 'uint32',
+          value: view.getUint32(20, true),
+          min: view.getUint32(20, true),
+          max: view.getUint32(20, true)
+        };
+        break;
+        
+      case '.xbm':
+        headerStructure.magic = {
+          offset: 0,
+          type: 'string',
+          value: headerBuffer.slice(0, 4).toString('ascii')
+        };
+        headerStructure.version = {
+          offset: 4,
+          type: 'uint32',
+          value: view.getUint32(4, true),
+          min: view.getUint32(4, true),
+          max: view.getUint32(4, true)
+        };
+        headerStructure.width = {
+          offset: 16,
+          type: 'uint32',
+          value: view.getUint32(16, true),
+          min: view.getUint32(16, true),
+          max: view.getUint32(16, true)
+        };
+        headerStructure.height = {
+          offset: 20,
+          type: 'uint32',
+          value: view.getUint32(20, true),
+          min: view.getUint32(20, true),
+          max: view.getUint32(20, true)
+        };
+        headerStructure.mipCount = {
+          offset: 24,
+          type: 'uint16',
+          value: view.getUint16(24, true),
+          min: view.getUint16(24, true),
+          max: view.getUint16(24, true)
+        };
+        headerStructure.format = {
+          offset: 26,
+          type: 'uint16',
+          value: view.getUint16(26, true),
+          min: view.getUint16(26, true),
+          max: view.getUint16(26, true)
+        };
+        break;
+        
+      // Other file types...
+    }
+    
+    return headerStructure;
+  }
+  
+  mergeHeaderStructure(target, source) {
+    // Merge header structures, tracking min/max values
+    for (const [field, info] of Object.entries(source)) {
+      if (!target[field]) {
+        target[field] = { ...info };
+      } else {
+        // Update min/max values
+        if (typeof info.value === 'number') {
+          if (target[field].min === undefined || info.value < target[field].min) {
+            target[field].min = info.value;
+          }
+          if (target[field].max === undefined || info.value > target[field].max) {
+            target[field].max = info.value;
+          }
+        }
+      }
+    }
+  }
+  
+  async detectFileSections(filePath, headerBuffer) {
+    // Detect sections within the file
+    // This would involve deeper analysis of the file structure
+    
+    // For now, return a placeholder based on file extension
+    const ext = path.extname(filePath).toLowerCase();
+    
+    switch (ext) {
+      case '.mesh':
+        return [
+          { name: 'header', offset: 0, size: 64 },
+          { name: 'vertexData', offset: 64 },
+          { name: 'indexData' },
+          { name: 'submeshes' }
+        ];
+        
+      case '.xbm':
+        return [
+          { name: 'header', offset: 0, size: 64 },
+          { name: 'textureData', offset: 64 }
+        ];
+        
+      // Other file types...
+    }
+    
+    return [];
+  }
+  
+  async saveAnalysisResults(signatures, rules) {
+    // Save analysis results to file
+    const analysisData = {
+      gameVersion: this.gameVersion,
+      signatures,
+      rules,
+      timestamp: Date.now()
+    };
+    
+    await fs.writeJson(this.dbPath, analysisData, { spaces: 2 });
+    logger.info(`Format analysis saved to ${this.dbPath}`);
+  }
+  
+  validateFile(filePath, expectedFormat) {
+    // Validate a file against the format rules
+    return new Promise(async (resolve, reject) => {
+      try {
+        const ext = path.extname(filePath).toLowerCase();
+        
+        // Get format rules for this extension
+        const rules = this.formatRules[ext] || this.formatRules[expectedFormat];
+        
+        if (!rules) {
+          return resolve({
+            valid: false,
+            errors: [`No format rules available for ${ext} files`]
+          });
+        }
+        
+        // Read file header
+        const fd = await fs.open(filePath, 'r');
+        const headerBuffer = Buffer.alloc(256);
+        await fd.read(headerBuffer, 0, 256, 0);
+        await fd.close();
+        
+        // Check magic bytes
+        const magicBytes = headerBuffer.slice(0, 8).toString('hex');
+        const validMagic = rules.validMagicBytes.some(valid => magicBytes.startsWith(valid));
+        
+        const errors = [];
+        const warnings = [];
+        
+        if (!validMagic) {
+          errors.push(`Invalid magic bytes. Expected one of [${rules.validMagicBytes.join(', ')}], got ${magicBytes}`);
+        }
+        
+        // Check header fields
+        const view = new DataView(headerBuffer.buffer);
+        
+        for (const field of rules.requiredHeaders) {
+          // Get header structure for this field
+          const headerStructure = this.fileSignatures[ext]?.headerStructure[field];
+          
+          if (headerStructure) {
+            const { offset, type } = headerStructure;
+            let value;
+            
+            // Read value based on type
+            switch (type) {
+              case 'uint32':
+                value = view.getUint32(offset, true);
+                break;
+              case 'uint16':
+                value = view.getUint16(offset, true);
+                break;
+              case 'string':
+                // String values are not checked for min/max
+                continue;
+            }
+            
+            // Check if value is within allowed range
+            const range = rules.fieldRanges[field];
+            if (range && (value < range.min || value > range.max)) {
+              warnings.push(`Field ${field} value ${value} is outside expected range [${range.min}, ${range.max}]`);
+            }
+          }
+        }
+        
+        // Check file size
+        const stats = await fs.stat(filePath);
+        const expectedSize = this.fileSignatures[ext]?.avgFileSize;
+        
+        if (expectedSize && Math.abs(stats.size - expectedSize) > expectedSize * 0.5) {
+          warnings.push(`File size ${stats.size} is significantly different from expected size ${expectedSize}`);
+        }
+        
+        // Check compatibility with game version
+        if (!rules.versionCompatibility[this.gameVersion]) {
+          warnings.push(`File format may not be compatible with game version ${this.gameVersion}`);
+        }
+        
+        resolve({
+          valid: errors.length === 0,
+          errors,
+          warnings
+        });
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+}
+
+class ModValidator {
+  constructor(config) {
+    this.config = config;
+    this.formatAnalyzer = new GameFormatAnalyzer(config);
+    this.gameVersion = config.modDefaults.gameVersion;
+  }
+  
+  async initialize() {
+    // Initialize format analyzer
+    const initialized = await this.formatAnalyzer.initialize();
+    
+    if (!initialized) {
+      // Need to analyze game files
+      const gamePath = this.config.paths.gamePath;
+      await this.formatAnalyzer.analyzeGameFiles(gamePath);
+    }
+    
+    return true;
+  }
+  
+  async validateMod(modPath) {
+    logger.info(`Validating mod at ${modPath}...`);
+    
+    const result = {
+      valid: true,
+      errors: [],
+      warnings: [],
+      gameVersion: this.gameVersion,
+      compatibility: true
+    };
+    
+    try {
+      // Check basic mod structure
+      const structureResult = await this.checkModStructure(modPath);
+      if (!structureResult.valid) {
+        result.valid = false;
+        result.errors.push(...structureResult.errors);
+      }
+      result.warnings.push(...structureResult.warnings);
+      
+      // Validate mod files
+      const fileResult = await this.validateModFiles(modPath);
+      if (!fileResult.valid) {
+        result.valid = false;
+        result.errors.push(...fileResult.errors);
+      }
+      result.warnings.push(...fileResult.warnings);
+      
+      // Check for conflicts with base game
+      const conflictResult = await this.checkGameConflicts(modPath);
+      if (!conflictResult.valid) {
+        result.warnings.push(...conflictResult.warnings);
+      }
+      
+      // Check game version compatibility
+      const compatibilityResult = await this.checkGameVersionCompatibility(modPath);
+      result.compatibility = compatibilityResult.compatible;
+      if (!compatibilityResult.compatible) {
+        result.warnings.push(...compatibilityResult.warnings);
+      }
+      
+      return result;
+    } catch (error) {
+      logger.error('Error validating mod:', error);
+      result.valid = false;
+      result.errors.push(`Validation error: ${error.message}`);
+      return result;
+    }
+  }
+  
+  async checkModStructure(modPath) {
+    // Check if the mod has the required structure
+    const result = {
+      valid: true,
+      errors: [],
+      warnings: []
+    };
+    
+    // Check for required files and directories
+    const requiredPaths = [
+      'info.json'
+    ];
+    
+    for (const reqPath of requiredPaths) {
+      const fullPath = path.join(modPath, reqPath);
+      if (!fs.existsSync(fullPath)) {
+        result.valid = false;
+        result.errors.push(`Missing required file: ${reqPath}`);
+      }
+    }
+    
+    // Check info.json content
+    try {
+      const infoPath = path.join(modPath, 'info.json');
+      if (fs.existsSync(infoPath)) {
+        const info = await fs.readJson(infoPath);
+        
+        if (!info.name) {
+          result.valid = false;
+          result.errors.push('info.json: Missing required field "name"');
+        }
+        
+        if (!info.version) {
+          result.valid = false;
+          result.errors.push('info.json: Missing required field "version"');
+        }
+        
+        if (!info.gameVersion) {
+          result.warnings.push('info.json: Missing recommended field "gameVersion"');
+        } else if (info.gameVersion !== this.gameVersion) {
+          result.warnings.push(`info.json: Mod targets game version ${info.gameVersion}, but current game version is ${this.gameVersion}`);
+        }
+      }
+    } catch (error) {
+      result.valid = false;
+      result.errors.push(`Error parsing info.json: ${error.message}`);
+    }
+    
+    // Check for proper mod directories
+    const modDirs = [
+      path.join(modPath, 'archive', 'pc', 'mod'),
+      path.join(modPath, 'r6', 'scripts'),
+      path.join(modPath, 'r6', 'tweaks'),
+      path.join(modPath, 'red4ext', 'plugins')
+    ];
+    
+    let hasMods = false;
+    for (const dir of modDirs) {
+      if (fs.existsSync(dir)) {
+        hasMods = true;
+        break;
+      }
+    }
+    
+    if (!hasMods) {
+      result.warnings.push('Mod doesn\'t contain any recognized mod directories (archive/r6/red4ext)');
+    }
+    
+    return result;
+  }
+  
+  async validateModFiles(modPath) {
+    // Validate each file in the mod
+    const result = {
+      valid: true,
+      errors: [],
+      warnings: []
+    };
+    
+    // Find all files in the mod
+    const modFiles = await this.getAllModFiles(modPath);
+    
+    // Validate each file by extension
+    for (const file of modFiles) {
+      const ext = path.extname(file).toLowerCase();
+      
+      // Skip files we don't need to validate
+      if (['.json', '.md', '.txt'].includes(ext)) {
+        continue;
+      }
+      
+      try {
+        // Validate file format
+        const fileValidation = await this.formatAnalyzer.validateFile(file, ext);
+        
+        if (!fileValidation.valid) {
+          result.valid = false;
+          for (const error of fileValidation.errors) {
+            result.errors.push(`${path.relative(modPath, file)}: ${error}`);
+          }
+        }
+        
+        for (const warning of fileValidation.warnings) {
+          result.warnings.push(`${path.relative(modPath, file)}: ${warning}`);
+        }
+        
+        // Validate file content based on type
+        const contentValidation = await this.validateFileContent(file, ext);
+        
+        if (!contentValidation.valid) {
+          result.valid = false;
+          for (const error of contentValidation.errors) {
+            result.errors.push(`${path.relative(modPath, file)}: ${error}`);
+          }
+        }
+        
+        for (const warning of contentValidation.warnings) {
+          result.warnings.push(`${path.relative(modPath, file)}: ${warning}`);
+        }
+      } catch (error) {
+        logger.error(`Error validating file ${file}:`, error);
+        result.warnings.push(`${path.relative(modPath, file)}: Validation error: ${error.message}`);
+      }
+    }
+    
+    return result;
+  }
+  
+  async getAllModFiles(modPath) {
+    // Get all files in the mod recursively
+    const files = [];
+    
+    const scan = async (directory) => {
+      try {
+        const entries = await fs.readdir(directory, { withFileTypes: true });
+        
+        for (const entry of entries) {
+          const entryPath = path.join(directory, entry.name);
+          
+          if (entry.isDirectory()) {
+            await scan(entryPath);
+          } else if (entry.isFile()) {
+            files.push(entryPath);
+          }
+        }
+      } catch (error) {
+        logger.error(`Error scanning directory ${directory}:`, error);
+      }
+    };
+    
+    await scan(modPath);
+    return files;
+  }
+  
+  async validateFileContent(filePath, fileExt) {
+    // Validate file content based on file type
+    const result = {
+      valid: true,
+      errors: [],
+      warnings: []
+    };
+    
+    switch (fileExt) {
+      case '.mesh':
+        await this.validateMeshFile(filePath, result);
+        break;
+        
+      case '.xbm':
+        await this.validateTextureFile(filePath, result);
+        break;
+        
+      case '.reds':
+        await this.validateRedscriptFile(filePath, result);
+        break;
+        
+      case '.yaml':
+        await this.validateYamlFile(filePath, result);
+        break;
+        
+      // Other file types...
+    }
+    
+    return result;
+  }
+  
+  async validateMeshFile(filePath, result) {
+    // In a real implementation, this would do proper validation
+    // For now, just check file size
+    const stats = await fs.stat(filePath);
+    
+    if (stats.size === 0) {
+      result.valid = false;
+      result.errors.push('Mesh file is empty');
+    } else if (stats.size < 100) {
+      result.valid = false;
+      result.errors.push('Mesh file appears to be too small to be valid');
+    }
+  }
+  
+  async validateTextureFile(filePath, result) {
+    // Similar to mesh validation
+    const stats = await fs.stat(filePath);
+    
+    if (stats.size === 0) {
+      result.valid = false;
+      result.errors.push('Texture file is empty');
+    } else if (stats.size < 100) {
+      result.valid = false;
+      result.errors.push('Texture file appears to be too small to be valid');
+    }
+  }
+  
+  async validateRedscriptFile(filePath, result) {
+    try {
+      const content = await fs.readFile(filePath, 'utf8');
+      
+      // Check for syntax errors
+      // In a real implementation, this would use a proper parser
+      
+      // Check for unbalanced braces
+      const openBraces = (content.match(/{/g) || []).length;
+      const closeBraces = (content.match(/}/g) || []).length;
+      
+      if (openBraces !== closeBraces) {
+        result.valid = false;
+        result.errors.push(`Unbalanced braces: ${openBraces} opening vs ${closeBraces} closing`);
+      }
+      
+      // Check for module declaration
+      if (!content.includes('module ')) {
+        result.warnings.push('Missing module declaration');
+      }
+      
+      // Check for common syntax errors
+      if (content.includes('function ') && !content.includes('func ')) {
+        result.warnings.push('Redscript uses "func" keyword, not "function"');
+      }
+    } catch (error) {
+      result.valid = false;
+      result.errors.push(`Error reading file: ${error.message}`);
+    }
+  }
+  
+  async validateYamlFile(filePath, result) {
+    try {
+      const content = await fs.readFile(filePath, 'utf8');
+      
+      // Parse YAML
+      try {
+        yaml.load(content);
+      } catch (yamlError) {
+        result.valid = false;
+        result.errors.push(`Invalid YAML: ${yamlError.message}`);
+      }
+    } catch (error) {
+      result.valid = false;
+      result.errors.push(`Error reading file: ${error.message}`);
+    }
+  }
+  
+  async checkGameConflicts(modPath) {
+    // Check for conflicts with base game files
+    const result = {
+      valid: true,
+      warnings: []
+    };
+    
+    // Check files in archive/pc/mod
+    const archivePath = path.join(modPath, 'archive', 'pc', 'mod');
+    if (fs.existsSync(archivePath)) {
+      // These paths are often problematic when overridden
+      const sensitiveGamePaths = [
+        'basegame/gameplay', 
+        'engine', 
+        'scripts/core',
+        'textures/characters/player',
+        'meshes/characters/player'
+      ];
+      
+      const files = await this.getAllModFiles(archivePath);
+      
+      for (const file of files) {
+        const relativePath = path.relative(archivePath, file);
+        
+        // Check if file path conflicts with sensitive game paths
+        for (const sensitivePath of sensitiveGamePaths) {
+          if (relativePath.startsWith(sensitivePath)) {

@@ -1,0 +1,175 @@
+// Join meshes
+        bpy.ops.object.select_all(action='DESELECT')
+        weapon_body.select_set(True)
+        barrel.select_set(True) 
+        trigger.select_set(True)
+        bpy.context.view_layer.objects.active = weapon_body
+        bpy.ops.object.join()
+        
+    elif item_type == 'clothing':
+        # Create basic clothing item based on params
+        clothing_type = params.get('clothing_type', 'jacket')
+        
+        if clothing_type == 'jacket':
+            # Create torso
+            bpy.ops.mesh.primitive_cube_add(size=1)
+            torso = bpy.context.active_object
+            torso.name = 'Jacket'
+            torso.scale = (0.4, 0.2, 0.5)
+            
+            # Create sleeves
+            bpy.ops.mesh.primitive_cylinder_add(radius=0.1, depth=0.5)
+            sleeve_r = bpy.context.active_object
+            sleeve_r.name = 'RightSleeve'
+            sleeve_r.location = (0.3, 0, 0)
+            sleeve_r.rotation_euler = (0, math.radians(90), 0)
+            
+            bpy.ops.mesh.primitive_cylinder_add(radius=0.1, depth=0.5)
+            sleeve_l = bpy.context.active_object
+            sleeve_l.name = 'LeftSleeve'
+            sleeve_l.location = (-0.3, 0, 0)
+            sleeve_l.rotation_euler = (0, math.radians(90), 0)
+            
+            # Join meshes
+            bpy.ops.object.select_all(action='DESELECT')
+            torso.select_set(True)
+            sleeve_r.select_set(True)
+            sleeve_l.select_set(True)
+            bpy.context.view_layer.objects.active = torso
+            bpy.ops.object.join()
+    
+    elif item_type == 'cyberware':
+        # Create cybernetic implant
+        bpy.ops.mesh.primitive_cylinder_add(radius=0.1, depth=0.3)
+        base = bpy.context.active_object
+        base.name = 'CyberwareBase'
+        
+        # Add details
+        bpy.ops.mesh.primitive_cylinder_add(radius=0.05, depth=0.1)
+        detail = bpy.context.active_object
+        detail.name = 'CyberwareDetail'
+        detail.location = (0, 0, 0.15)
+        
+        # Add circuit-like details
+        for i in range(6):
+            angle = (i / 6) * 2 * math.pi
+            x = math.cos(angle) * 0.08
+            y = math.sin(angle) * 0.08
+            
+            bpy.ops.mesh.primitive_cube_add(size=0.02)
+            circuit = bpy.context.active_object
+            circuit.name = f'Circuit_{i}'
+            circuit.location = (x, y, 0.05)
+        
+        # Join all objects
+        bpy.ops.object.select_all(action='SELECT')
+        bpy.context.view_layer.objects.active = base
+        bpy.ops.object.join()
+    
+    # Add materials
+    mat = bpy.data.materials.new(name=f"{item_type.capitalize()}Material")
+    mat.use_nodes = True
+    
+    # Assign material to object
+    obj = bpy.context.active_object
+    if obj.data.materials:
+        obj.data.materials[0] = mat
+    else:
+        obj.data.materials.append(mat)
+    
+    # Export path
+    export_path = params.get('export_path', '/tmp')
+    
+    # Export GLB
+    bpy.ops.export_scene.gltf(
+        filepath=os.path.join(export_path, f'{item_type}.glb'),
+        export_format='GLB'
+    )
+    
+    # Export FBX
+    bpy.ops.export_scene.fbx(
+        filepath=os.path.join(export_path, f'{item_type}.fbx')
+    )
+
+# Run the main function
+generate_item()
+    `;
+    
+    fs.writeFileSync(
+      path.join(this.pythonScriptsPath, 'item_generator.py'),
+      itemGeneratorScript
+    );
+    
+    // Create Python script for vehicle generation
+    // Additional model generation scripts...
+  }
+  
+  async generateCharacter(params) {
+    // Write parameters to temporary file
+    const paramFile = path.join(os.tmpdir(), `character_params_${Date.now()}.json`);
+    await fs.writeJson(paramFile, {
+      gender: params.gender || 'male',
+      bodyType: params.bodyType || 'average',
+      height: params.height || 1.8,
+      export_path: params.outputPath,
+      joined: params.separateHeadBody !== true,
+      export_materials: true
+    });
+    
+    // Run Blender with the Python script
+    await this.runBlenderScript('character_generator.py', paramFile);
+    
+    // Return the paths to the generated files
+    return {
+      glb: path.join(params.outputPath, 'character.glb'),
+      fbx: path.join(params.outputPath, 'character.fbx')
+    };
+  }
+  
+  async generateItem(params) {
+    // Write parameters to temporary file
+    const paramFile = path.join(os.tmpdir(), `item_params_${Date.now()}.json`);
+    await fs.writeJson(paramFile, {
+      type: params.type || 'weapon',
+      clothing_type: params.clothingType,
+      export_path: params.outputPath
+    });
+    
+    // Run Blender with the Python script
+    await this.runBlenderScript('item_generator.py', paramFile);
+    
+    // Return the paths to the generated files
+    return {
+      glb: path.join(params.outputPath, `${params.type}.glb`),
+      fbx: path.join(params.outputPath, `${params.type}.fbx`)
+    };
+  }
+  
+  async runBlenderScript(scriptName, paramFile) {
+    return new Promise((resolve, reject) => {
+      const scriptPath = path.join(this.pythonScriptsPath, scriptName);
+      const blenderProcess = spawn(this.blenderPath, [
+        '--background',
+        '--python', scriptPath,
+        '--', paramFile
+      ]);
+      
+      // Capture stdout and stderr for logging
+      blenderProcess.stdout.on('data', (data) => {
+        logger.debug(`Blender stdout: ${data}`);
+      });
+      
+      blenderProcess.stderr.on('data', (data) => {
+        logger.error(`Blender stderr: ${data}`);
+      });
+      
+      blenderProcess.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(`Blender process exited with code ${code}`));
+        }
+      });
+    });
+  }
+}
