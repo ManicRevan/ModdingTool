@@ -1,0 +1,230 @@
+class RED4BinaryParser {
+  constructor() {
+    this.endianness = 'little'; // RED Engine uses little-endian format
+    this.headerSize = 0x30; // Common header size for many RED4 formats
+  }
+
+  async parseFile(filePath, format) {
+    const buffer = await fs.readFile(filePath);
+    const fileSize = buffer.length;
+    
+    // Verify magic bytes for file identification
+    const magicBytes = buffer.subarray(0, 4).toString('utf-8');
+    if (!this.verifyMagicBytes(magicBytes, format)) {
+      throw new Error(`Invalid file format. Expected ${format}, got ${magicBytes}`);
+    }
+    
+    // Parse specific format
+    switch(format) {
+      case 'MESH': return this.parseMesh(buffer);
+      case 'XBM': return this.parseTexture(buffer);
+      case 'ANM': return this.parseAnimation(buffer);
+      case 'APP': return this.parseAppearance(buffer);
+      case 'ENT': return this.parseEntity(buffer);
+      default: throw new Error(`Unsupported format: ${format}`);
+    }
+  }
+
+  verifyMagicBytes(magic, format) {
+    const formatMagic = {
+      'MESH': 'MESH',
+      'XBM': 'XBM2',
+      'ANM': 'ANIM',
+      'APP': 'APPR',
+      'ENT': 'ENTY'
+    };
+    return magic === formatMagic[format];
+  }
+
+  parseMesh(buffer) {
+    // Create a DataView for structured binary reading
+    const view = new DataView(buffer.buffer);
+    
+    // Parse header
+    const header = {
+      magic: buffer.subarray(0, 4).toString('utf-8'),
+      version: view.getUint32(0x04, true),
+      fileSize: view.getUint32(0x08, true),
+      vertexCount: view.getUint32(0x10, true),
+      indexCount: view.getUint32(0x14, true),
+      submeshCount: view.getUint32(0x18, true)
+    };
+    
+    // Parse vertex data section
+    const vertexDataOffset = this.headerSize;
+    const vertexData = this.parseVertexData(buffer, vertexDataOffset, header.vertexCount);
+    
+    // Parse index data section
+    const indexDataOffset = vertexDataOffset + (header.vertexCount * vertexData.stride);
+    const indexData = this.parseIndexData(buffer, indexDataOffset, header.indexCount);
+    
+    // Parse submeshes
+    const submeshOffset = indexDataOffset + (header.indexCount * 2); // 16-bit indices
+    const submeshes = this.parseSubmeshes(buffer, submeshOffset, header.submeshCount);
+    
+    return {
+      header,
+      vertexData,
+      indexData,
+      submeshes
+    };
+  }
+
+  parseVertexData(buffer, offset, count) {
+    // Determine vertex format and stride based on buffer patterns
+    const vertexFormats = this.detectVertexFormat(buffer, offset);
+    const stride = vertexFormats.reduce((total, format) => total + format.size, 0);
+    
+    const vertices = [];
+    for (let i = 0; i < count; i++) {
+      const vertex = {};
+      let attributeOffset = offset + (i * stride);
+      
+      for (const format of vertexFormats) {
+        vertex[format.name] = this.readAttribute(buffer, attributeOffset, format.type);
+        attributeOffset += format.size;
+      }
+      
+      vertices.push(vertex);
+    }
+    
+    return {
+      stride,
+      formats: vertexFormats,
+      vertices
+    };
+  }
+
+  detectVertexFormat(buffer, offset) {
+    // Analyze data patterns to detect vertex attributes
+    // This is a complex topic and would require deep analysis of file patterns
+    
+    // For example, detecting position, normal, UV, etc.
+    // Real implementation would analyze data patterns more thoroughly
+    return [
+      { name: 'position', type: 'float3', size: 12 },
+      { name: 'normal', type: 'float3', size: 12 },
+      { name: 'texcoord', type: 'float2', size: 8 }
+      // Additional attributes determined by analysis
+    ];
+  }
+
+  readAttribute(buffer, offset, type) {
+    const view = new DataView(buffer.buffer);
+    
+    switch(type) {
+      case 'float3':
+        return {
+          x: view.getFloat32(offset, true),
+          y: view.getFloat32(offset + 4, true),
+          z: view.getFloat32(offset + 8, true)
+        };
+      case 'float2':
+        return {
+          u: view.getFloat32(offset, true),
+          v: view.getFloat32(offset + 4, true)
+        };
+      // Additional types as needed
+    }
+  }
+
+  parseIndexData(buffer, offset, count) {
+    const view = new DataView(buffer.buffer);
+    const indices = [];
+    
+    // Assuming 16-bit indices
+    for (let i = 0; i < count; i++) {
+      indices.push(view.getUint16(offset + (i * 2), true));
+    }
+    
+    return indices;
+  }
+
+  parseSubmeshes(buffer, offset, count) {
+    const view = new DataView(buffer.buffer);
+    const submeshes = [];
+    
+    let currentOffset = offset;
+    for (let i = 0; i < count; i++) {
+      const submesh = {
+        materialID: view.getUint32(currentOffset, true),
+        indexStart: view.getUint32(currentOffset + 4, true),
+        indexCount: view.getUint32(currentOffset + 8, true),
+        vertexStart: view.getUint32(currentOffset + 12, true)
+      };
+      
+      submeshes.push(submesh);
+      currentOffset += 16; // Size of submesh record
+    }
+    
+    return submeshes;
+  }
+  
+  parseTexture(buffer) {
+    // Similar structure to parseMesh but for texture data
+    const view = new DataView(buffer.buffer);
+    
+    const header = {
+      magic: buffer.subarray(0, 4).toString('utf-8'),
+      version: view.getUint32(0x04, true),
+      width: view.getUint32(0x10, true),
+      height: view.getUint32(0x14, true),
+      mipCount: view.getUint16(0x18, true),
+      format: view.getUint16(0x1A, true)
+    };
+    
+    // Determine texture format from the format ID
+    const formatInfo = this.getTextureFormatInfo(header.format);
+    
+    // Calculate data size
+    const dataSize = this.calculateMipChainSize(header.width, header.height, header.mipCount, formatInfo);
+    
+    // Extract raw texture data
+    const textureData = buffer.subarray(this.headerSize, this.headerSize + dataSize);
+    
+    return {
+      header,
+      formatInfo,
+      dataSize,
+      textureData
+    };
+  }
+  
+  getTextureFormatInfo(formatID) {
+    // Map of format IDs to format details
+    const formats = {
+      0x01: { name: 'BC1', blockSize: 8, bpp: 0.5 },
+      0x03: { name: 'BC3', blockSize: 16, bpp: 1.0 },
+      0x07: { name: 'BC7', blockSize: 16, bpp: 1.0 },
+      0x09: { name: 'RGBA8', blockSize: 0, bpp: 4.0 }
+      // Additional formats
+    };
+    
+    return formats[formatID] || { name: 'Unknown', blockSize: 0, bpp: 0 };
+  }
+  
+  calculateMipChainSize(width, height, mipCount, formatInfo) {
+    let totalSize = 0;
+    let mipWidth = width;
+    let mipHeight = height;
+    
+    for (let i = 0; i < mipCount; i++) {
+      if (formatInfo.blockSize > 0) {
+        // Block-compressed format
+        const blocksX = Math.max(1, Math.ceil(mipWidth / 4));
+        const blocksY = Math.max(1, Math.ceil(mipHeight / 4));
+        totalSize += blocksX * blocksY * formatInfo.blockSize;
+      } else {
+        // Standard format
+        totalSize += mipWidth * mipHeight * formatInfo.bpp;
+      }
+      
+      mipWidth = Math.max(1, Math.floor(mipWidth / 2));
+      mipHeight = Math.max(1, Math.floor(mipHeight / 2));
+    }
+    
+    return totalSize;
+  }
+  
+  // Similar implementations for animation, appearance, and entity parsers
+}
